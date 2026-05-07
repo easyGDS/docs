@@ -150,6 +150,12 @@
             ]
           }
         ]
+      },
+      {
+        "tab": "Public",
+        "pages": [
+          "create-your-own-search-widget"
+        ]
       }
     ]
   },
