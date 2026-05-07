@@ -157,7 +157,7 @@
           {
             "group": "general",
             "pages": [
-              "create-your-own-search-widget"
+              "public/create-your-own-search-widget"
             ]
           }
         ]
