@@ -153,8 +153,13 @@
       },
       {
         "tab": "Public",
-        "pages": [
-          "create-your-own-search-widget"
+        "groups": [
+          {
+            "group": "general",
+            "pages": [
+              "create-your-own-search-widget"
+            ]
+          }
         ]
       }
     ]
