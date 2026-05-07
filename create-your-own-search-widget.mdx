@@ -2,4 +2,585 @@
 title: "create your own search widget"
 ---
 
-/
+> **Audience:** Web developers integrating the easyGDS booking funnel into a client-side portal. **What you will build:** A search widget that captures user input on your portal and hands the user off to the easyGDS shopping flow via a deep link.
+
+## Table of Contents
+
+- [Introduction](#introduction)
+- [Conventions](#conventions)
+- [Common Concepts](#common-concepts)
+- [1. Flight Search Widget](#1-flight-search-widget)
+  - [1.1 Origin & Destination Autocomplete](#11-origin--destination-autocomplete)
+  - [1.2 Travelers Array](#12-travelers-array)
+  - [1.3 Building the Flight Deep Link](#13-building-the-flight-deep-link)
+  - [1.4 Sample Flight Deep Links](#14-sample-flight-deep-links)
+- [2. Hotel Search Widget](#2-hotel-search-widget)
+  - [2.1 Destination & Hotel Autocomplete](#21-destination--hotel-autocomplete)
+  - [2.2 Room Object Array](#22-room-object-array)
+  - [2.3 Building the Hotel Deep Link](#23-building-the-hotel-deep-link)
+    - [2.3.1 Destination-level Search](#231-destination-level-search)
+    - [2.3.2 Hotel-level Search](#232-hotel-level-search)
+- [3. Bundle (Flight \+ Hotel) Search Widget](#3-bundle-flight--hotel-search-widget)
+  - [3.1 Origin & Destination Autocomplete](#31-origin--destination-autocomplete)
+  - [3.2 Room Object Array](#32-room-object-array)
+  - [3.3 Building the Bundle Deep Link](#33-building-the-bundle-deep-link)
+
+---
+
+## Introduction
+
+This guide explains how to build an easyGDS search widget on your own web portal. Users enter their search criteria on your site; your widget then redirects them into the easyGDS shopping flow via a structured deep link, where they continue with results, pre-book, and booking.
+
+The easyGDS platform supports the following products:
+
+- Flight
+- Hotels
+- Bundle (Flight \+ Hotel)
+- Tours & Activities
+- Transfers
+- Car Rental
+- Stop-over
+
+**This guide currently covers the Flight, Hotels, and Bundle widgets.** The remaining products (Tours & Activities, Transfers, Car Rental, Stop-over) will be documented separately.
+
+## Conventions
+
+| Notation | Meaning |
+| --- | --- |
+| `<app domain>` | The easyGDS app domain assigned to your tenant (e.g. `demo.apps.easygds.com`). Replace this in every URL example. |
+| `YYYY-MM-DD` | All dates must be ISO 8601 calendar dates, e.g. `2026-10-10`. |
+| `en-US` | All locale codes follow the IETF BCP 47 format (`<language>-<region>`). |
+| `USD`, `SGD` | All currency codes follow ISO 4217 (3-letter). The currency must be activated for your tenant in the easyGDS dashboard. |
+| `in`, `us` | Nationality codes follow ISO 3166-1 alpha-2 (2-letter, lower-case). |
+| URL-encoding | Deep links carry JSON values inside query parameters. Every JSON payload must be URL-encoded (`{` → `%7B`, `"` → `%22`, etc.). The samples in this guide show the **decoded** JSON for readability — when generating links in code, encode them with `encodeURIComponent` (or your platform's equivalent). |
+
+## Common Concepts
+
+The following parameters are shared between the Flight, Hotel, and Bundle deep links.
+
+| Parameter | Description | Notes |
+| --- | --- | --- |
+| `currency_code` | Currency for the search and pricing. | Required. Must be activated for your tenant in the easyGDS dashboard. |
+| `language_code` | Locale for the booking flow. | Required. Default: `en-US`. |
+| `package_id` | The static product package identifier. | Required. Provided by the easyGDS team during onboarding — one per product. The same `package_id` is used for both destination-level and hotel-level Hotel searches. |
+| `travelers` | Array of traveler objects describing the pax mix. See [Travelers Array](#12-travelers-array). | Required. |
+| `expectation` | Object containing the search-criteria payload. Shape differs per product. | Required. |
+
+---
+
+## 1. Flight Search Widget
+
+### Required Fields
+
+A flight search widget must collect:
+
+1. **Route type** — `oneway`, `round trip`, or `multi-city`.
+2. **Origin** — airport or city code.
+3. **Destination** — airport or city code.
+4. **Departure date** (`YYYY-MM-DD`).
+5. **Return date** (`YYYY-MM-DD`) — required for round-trip only.
+6. **Travelers**:
+   - Adults count (per the configured age policy).
+   - Children count, with each child's age (per the age policy).
+   - Infant count, with each infant's age (per the age policy).
+7. **Cabin class** — one of `Economy`, `Premium`, `Business`, `First`.
+
+### 1.1 Origin & Destination Autocomplete
+
+Use this endpoint to populate the origin and destination autocomplete fields with airports and cities matching the user's input.
+
+**Endpoint**
+
+```http
+GET <app domain>/api/places/cities-with-airports
+```
+
+**Query parameters**
+
+| Parameter | Description | Required | Sample | Default |
+| --- | --- | --- | --- | --- |
+| `search_text` | The user's input text. | Yes | `KUL` | — |
+| `language_code` | Language code for the response. | Yes | `en-US` | `en-US` |
+| `per_page` | Number of cities or airports to return. | Yes | `20` | `20` |
+| `page` | Page number for paginated results. | Yes | `1` | `1` |
+
+**Response fields**
+
+| Field | Description | Sample |
+| --- | --- | --- |
+| `id` | easyGDS internal place identifier. | — |
+| `name` | Short name of the place or airport. | — |
+| `long_name` | Long, fully-qualified name of the place or airport. | — |
+| `type` | The place type. One of: `administrative_area_level_4` (region/province/state), `administrative_area_level_3` (city/sub-region/district/county), or `airport`. When `type = airport`, the returned place is an airport. | `airport` |
+| `code` | Airport or city code to send to the easyGDS shopping flow when initiating a search. | `KUL` |
+
+### 1.2 Travelers Array
+
+The `travelers` array describes the pax mix and is shared across the Flight, Hotel, and Bundle widgets. Each entry contains a traveler **type**, an **age**, and a **room index**. The `room` field exists because this same object shape is reused for Hotel and Bundle searches; for **Flight searches it is always `1`**.
+
+**Field reference**
+
+| Key | Description | Required | Value |
+| --- | --- | --- | --- |
+| `type` | Traveler type. | Yes | One of: `adult`, `child`, `infant`. |
+| `age` | Age of the traveler. For adults, you may send a static value if you do not collect adult ages (`18` or above is recommended). **For children and infants, age is mandatory** — omitting it will cause an age-validation error during booking. | Yes | Integer (e.g. `18`, `5`, `1`) |
+| `room` | Room index. Used by Hotel and Bundle flows. **Always send `1` for Flight searches.** | Yes | `1` |
+
+> **Note:** The age policy used to define the boundaries between adult / child / infant is configured per tenant. Use those boundaries when the user enters ages on your widget.
+
+**Example** — 2 adults, 1 child (age 5), 1 infant (age 1) for a Flight search:
+
+```json
+[
+  { "type": "adult",  "age": 18, "room": 1 },
+  { "type": "adult",  "age": 18, "room": 1 },
+  { "type": "child",  "age": 5,  "room": 1 },
+  { "type": "infant", "age": 1,  "room": 1 }
+]
+```
+
+### 1.3 Building the Flight Deep Link
+
+Once the user has filled in the form, redirect them to the flight shopping flow using the deep link below.
+
+**Endpoint**
+
+```http
+GET <app domain>/shopping/processes/flight
+```
+
+**Query parameters**
+
+| Parameter | Description | Required | Sample |
+| --- | --- | --- | --- |
+| `currency_code` | Currency code for the search. Must be activated for your tenant in the easyGDS dashboard. | Yes | `USD` |
+| `language_code` | Locale code for the booking flow. | Yes | `en-US` |
+| `package_id` | Flight package identifier — provided by the easyGDS team. | Yes | `b6610ac8-bc75-422f-b1d2-543c73274b95` |
+| `travelers` | Travelers array, as defined in [§1.2](#12-travelers-array). | Yes | See §1.2 |
+| `expectation` | Object describing the search criteria. See [Expectation object](#expectation-object-flight). | Yes | See below |
+
+#### Expectation object — Flight
+
+| Key | Description | Required | Sample |
+| --- | --- | --- | --- |
+| `is_multi_city` | `true` when the search is multi-city, otherwise `false`. | Yes | `false` |
+| `start_place_code` | Origin code. Either an airport or city code from the autocomplete response. | Yes (one-way / round-trip) | `KUL` |
+| `start_place_type` | Type of `start_place_code`, derived from the `/api/places/cities-with-airports` response `type`. For airport use `airport_code` and for others use `city_code`. | Yes (one-way / round-trip) | `airport_code` |
+| `des_code` | Destination code. Either an airport or city code from the autocomplete response. | Yes (one-way / round-trip) | `SIN` |
+| `des_type` | Type of `des_code`, For airport use `airport_code` and for others use `city_code` similar to `start_place_type`. | Yes (one-way / round-trip) | `airport_code` |
+| `fl_cabin_class` | Cabin class for the search. | Yes | One of: `Economy`, `Premium`, `Business`, `First` |
+| `fl_departure_date` | Departure date. | Yes | `2026-10-10` |
+| `fl_return_date` | Return date. | Yes (round-trip only) | `2026-10-12` |
+| `fl_round_trip` | `true` for round trip, `false` for one-way. | Yes | `false` |
+| `legs` | Per-leg route details. **Multi-city only** — replaces the single-leg fields above. See [Multi-city legs](#multi-city-legs). | Conditional | See below |
+
+**Example expectation** — one-way Economy from KUL to TRZ on 2026-05-22:
+
+```json
+{
+  "is_multi_city": false,
+  "start_place_code": "KUL",
+  "start_place_type": "airport_code",
+  "des_code": "TRZ",
+  "des_type": "airport_code",
+  "fl_cabin_class": "Economy",
+  "fl_departure_date": "2026-05-22",
+  "fl_return_date": "2026-05-22",
+  "fl_round_trip": false
+}
+```
+
+#### Multi-city legs
+
+For multi-city searches, set `is_multi_city: true` and provide a `legs` object instead of the single-leg `start_place_code` / `des_code` fields. Each key in `legs` is a route segment of the form `<origin>-<destination>`, mapping to an object with the leg's departure date and zero-based index.
+
+```json
+{
+  "is_multi_city": true,
+  "fl_cabin_class": "Economy",
+  "legs": {
+    "KUL-TRZ": { "departure_date": "2026-05-23", "index": 0 },
+    "TRZ-SIN": { "departure_date": "2026-05-27", "index": 1 },
+    "SIN-KUL": { "departure_date": "2026-05-30", "index": 2 }
+  }
+}
+```
+
+### 1.4 Sample Flight Deep Links
+
+The samples below are shown URL-decoded for readability. Encode all JSON payloads (`travelers`, `expectation`) with `encodeURIComponent` before redirecting.
+
+**Round trip**
+
+```text
+https://demo.apps.easygds.com/shopping/processes/flight
+  ?currency_code=SGD
+  &language_code=en-US
+  &package_id=3dca0e8c-b1ec-4fef-913e-09b577956c6d
+  &travelers=[{"type":"adult","age":12,"room":1},{"type":"adult","age":12,"room":1},{"type":"child","age":2,"room":1},{"type":"infant","age":0,"room":1}]
+  &expectation={"is_multi_city":false,"start_place_code":"KUL","start_place_type":"airport_code","des_code":"SIN","des_type":"airport_code","fl_cabin_class":"Economy","fl_departure_date":"2026-05-22","fl_return_date":"2026-05-23","fl_round_trip":true}
+```
+
+**One way**
+
+```text
+https://demo.apps.easygds.com/shopping/processes/flight
+  ?currency_code=SGD
+  &language_code=en-US
+  &package_id=3dca0e8c-b1ec-4fef-913e-09b577956c6d
+  &travelers=[{"type":"adult","age":12,"room":1},{"type":"adult","age":12,"room":1},{"type":"child","age":2,"room":1},{"type":"infant","age":0,"room":1}]
+  &expectation={"is_multi_city":false,"start_place_code":"KUL","start_place_type":"airport_code","des_code":"SIN","des_type":"airport_code","fl_cabin_class":"Economy","fl_departure_date":"2026-05-22","fl_return_date":"2026-05-22","fl_round_trip":false}
+```
+
+**Multi-city**
+
+```text
+https://demo.apps.easygds.com/shopping/processes/flight
+  ?currency_code=SGD
+  &language_code=en-US
+  &package_id=3dca0e8c-b1ec-4fef-913e-09b577956c6d
+  &travelers=[{"type":"adult","age":12,"room":1},{"type":"adult","age":12,"room":1},{"type":"child","age":2,"room":1},{"type":"infant","age":0,"room":1}]
+  &expectation={"is_multi_city":true,"fl_cabin_class":"Economy","legs":{"KUL-TRZ":{"departure_date":"2026-05-23","index":0},"TRZ-SIN":{"departure_date":"2026-05-30","index":1},"SIN-KUL":{"departure_date":"2026-06-06","index":2}}}
+```
+
+---
+
+## 2. Hotel Search Widget
+
+### Required Fields
+
+A hotel search widget must collect:
+
+- **Destination or hotel** — selected from the autocomplete (a place such as a country/region/city, or a specific hotel property).
+- **Check-in date** (`YYYY-MM-DD`).
+- **Check-out date** (`YYYY-MM-DD`).
+- **Room details with pax** — an array of one or more rooms, each with:
+  - Room index (1-based).
+  - Adults count (per the configured age policy).
+  - Children count, with each child's age (per the child age policy).
+  - Infants count, with each infant's age (per the child age policy).
+
+### 2.1 Destination & Hotel Autocomplete
+
+Use this endpoint to power the destination/hotel autocomplete. The response can include both **places** (countries, regions, cities, airports) and **properties** (specific hotels) when `with_properties=true`.
+
+**Endpoint**
+
+```http
+GET <app domain>/api/places
+```
+
+**Query parameters**
+
+| Parameter | Description | Required | Sample |
+| --- | --- | --- | --- |
+| `search_text` | The user's input text. | Yes | `Kuala` |
+| `types` | Comma-separated list of place types to include in the response. Possible values: `country`, `airport`, `administrative_area_level_2`, `administrative_area_level_3`, `administrative_area_level_4`. | Yes | `country,airport,administrative_area_level_4,administrative_area_level_3` |
+| `language_code` | Language code for the response. | Yes | `en-US` |
+| `per_page` | Page size for the response. | Yes | `20` |
+| `page` | Page number for paginated results. | Yes | `1` |
+| `with_properties` | When `true`, also return matching hotel properties alongside places. | No | `true` |
+
+**Example request**
+
+```text
+https://demo.apps.easygds.com/api/places?search_text=kuala&types=country,airport,administrative_area_level_4,administrative_area_level_3&language_code=en-US&per_page=20&page=1&with_properties=true
+```
+
+**Response — `places` array**
+
+| Field | Description | Sample |
+| --- | --- | --- |
+| `id` | easyGDS place identifier. | `180008` |
+| `name` | Short name of the place. | `Kuala Lumpur` |
+| `long_name` | Fully-qualified name of the place. | `Kuala Lumpur, Federal Territory of Kuala Lumpur, Malaysia` |
+| `type` | Place type. One of: `country`, `airport`, `administrative_area_level_2`, `administrative_area_level_3`, `administrative_area_level_4`. | `administrative_area_level_4` |
+
+**Response — `properties` array** (only present when `with_properties=true`)
+
+| Field | Description | Sample |
+| --- | --- | --- |
+| `id` | easyGDS property identifier. | `24153752` |
+| `name` | Property name. | `W Kuala Lumpur` |
+| `street_address` | Property street address. | `121 Jalan Ampang, Kuala Lumpur, Wilayah Persekutuan, 50450, MY` |
+| `type` | Property type. Expected value: `hotel`. | `hotel` |
+| `star` | Hotel star rating. | `5` |
+
+**Sample response**
+
+```json
+{
+  "places": [
+    {
+      "id": "180008",
+      "created_at": "2024-08-02T12:31:14.737368",
+      "updated_at": "2025-11-24T15:04:17.291935",
+      "name": "Kuala Lumpur",
+      "long_name": "Kuala Lumpur , Federal Territory of Kuala Lumpur, Malaysia",
+      "type": "administrative_area_level_4"
+    },
+    {
+      "id": "553248635975177494",
+      "created_at": "2024-08-02T12:44:06.434622",
+      "updated_at": null,
+      "name": "Federal Territory of Kuala Lumpur",
+      "long_name": "Federal Territory of Kuala Lumpur, Malaysia",
+      "type": "administrative_area_level_3"
+    }
+  ],
+  "properties": [
+    {
+      "id": "24153752",
+      "created_at": "2024-08-02T14:15:38.334953",
+      "updated_at": "2026-04-06T15:31:28.788130",
+      "name": "W Kuala Lumpur",
+      "street_address": "121 Jalan Ampang, Kuala Lumpur, Wilayah Persekutuan, 50450, MY",
+      "type": "hotel",
+      "star": 5
+    }
+  ]
+}
+```
+
+> **Tip:** branch on the selected item's `type`. If the user picks an item from `places`, use the [destination-level search flow](#231-destination-level-search). If the user picks a `hotel` from `properties`, use the [hotel-level search flow](#232-hotel-level-search).
+
+### 2.2 Room Object Array
+
+For Hotel and Bundle searches, the `travelers` array contains one entry per pax across all rooms. The `room` field is a 1-based index that groups pax into the same room.
+
+Each object contains:
+
+- **type** — `adult`, `child`, or `infant`.
+- **age** — required for children and infants (per the configured child age policy). For adults, age collection is not required; send any static value (`18` or above is recommended).
+- **room** — 1-based room index. **Always starts at `1`** and increments per additional room.
+
+**Example — 1 room with 2 adults, 1 child (age 5), 1 infant (age 1)**
+
+```json
+[
+  { "type": "adult",  "age": 18, "room": 1 },
+  { "type": "adult",  "age": 18, "room": 1 },
+  { "type": "child",  "age": 5,  "room": 1 },
+  { "type": "infant", "age": 1,  "room": 1 }
+]
+```
+
+**Example — 2 rooms, each with 2 adults, 1 child, 1 infant**
+
+```json
+[
+  { "type": "adult",  "age": 18, "room": 1 },
+  { "type": "adult",  "age": 18, "room": 1 },
+  { "type": "child",  "age": 5,  "room": 1 },
+  { "type": "infant", "age": 1,  "room": 1 },
+  { "type": "adult",  "age": 18, "room": 2 },
+  { "type": "adult",  "age": 18, "room": 2 },
+  { "type": "child",  "age": 4,  "room": 2 },
+  { "type": "infant", "age": 0,  "room": 2 }
+]
+```
+
+### 2.3 Building the Hotel Deep Link
+
+Hotel search has **two distinct deep-link flows** depending on what the user selected in the autocomplete:
+
+- The user selected a **place** (anything whose `type` is not `hotel`): use [destination-level search](#231-destination-level-search).
+- The user selected a **hotel property** (from the `properties` array, `type = hotel`): use [hotel-level search](#232-hotel-level-search).
+
+The same `package_id` is used for both flows.
+
+<a id="ht-des-type-derivation" />
+
+**Destination type & code derivation**
+
+The `ht_des_type` field inside the `expectation` object has only **three** possible values, derived from the `type` of the item the user selected in the autocomplete. The companion `ht_des_code` field carries either the selected item's `id` or its `code`, depending on `ht_des_type`:
+
+| Selected item's `type` (from `/api/places`) | `ht_des_type` | `ht_des_code` is the selected item's… |
+| --- | --- | --- |
+| `country`, `administrative_area_level_2`, `administrative_area_level_3`, `administrative_area_level_4` | `place_id` | `id` (e.g. `180008`) |
+| `airport` | `airport_code` | `code` (e.g. `SIN`) |
+| `hotel` (selected from the `properties` array) | `property_id` | `id` (e.g. `24153752`) |
+
+This same rule applies to the Bundle widget (see [§3.3](#33-building-the-bundle-deep-link)). Because the Bundle uses `/api/places/cities-with-airports` — which returns airports — its `ht_des_type` is typically `airport_code`.
+
+#### 2.3.1 Destination-level Search
+
+**Endpoint**
+
+```http
+GET <app domain>/shopping/processes/hotel
+```
+
+**Query parameters**
+
+| Parameter | Description | Required | Sample |
+| --- | --- | --- | --- |
+| `currency_code` | Currency code for the search. Must be activated for your tenant in the easyGDS dashboard. | Yes | `USD` |
+| `language_code` | Locale code for the booking flow. | Yes | `en-US` |
+| `package_id` | Hotel package identifier — provided by the easyGDS team. | Yes | `4a5c9770-f901-4b96-8673-ecdc5ee49102` |
+| `travelers` | Room object array (see [§2.2](#22-room-object-array)). | Yes | See §2.2 |
+| `nationality` | ISO 3166-1 alpha-2 lead-guest nationality. | Conditional — required only when nationality is mandatory in your easyGDS dashboard. | `in` |
+| `expectation` | Object with the search criteria. See below. | Yes | See below |
+
+**Expectation object — destination-level**
+
+| Key | Description | Required | Sample |
+| --- | --- | --- | --- |
+| `nationality` | ISO 3166-1 alpha-2 nationality of the lead guest. | Conditional — required only when nationality is mandatory in your easyGDS dashboard onboarding settings. | `in` |
+| `ht_des_code` | Identifier of the selected place. The value is the place's `id` when the place is a country/region/city, or the place's `code` when it is an airport. See [destination type & code derivation](#ht-des-type-derivation). | Yes | `180008` (city) / `SIN` (airport) |
+| `ht_des_type` | The kind of identifier carried in `ht_des_code`. For destination-level search this is `place_id` (country / `administrative_area_level_*`) or `airport_code` (airport). See [destination type & code derivation](#ht-des-type-derivation). | Yes | `place_id` |
+| `ht_checkin_date` | Check-in date. | Yes | `2026-07-24` |
+| `ht_checkout_date` | Check-out date. | Yes | `2026-07-25` |
+
+**Sample deep link**
+
+```text
+https://demo.apps.easygds.com/shopping/processes/hotel
+  ?currency_code=SGD
+  &language_code=en-US
+  &package_id=4a5c9770-f901-4b96-8673-ecdc5ee49102
+  &travelers=[{"type":"adult","age":12,"room":1}]
+  &nationality=in
+  &expectation={"nationality":"in","ht_des_code":"180008","ht_checkin_date":"2026-07-24","ht_checkout_date":"2026-07-25","ht_des_type":"place_id"}
+```
+
+#### 2.3.2 Hotel-level Search
+
+Use this flow when the user has selected a specific hotel from the `properties` array of the autocomplete response. The selected property's `id` appears **both** as the last segment of the URL path **and** as the `place_id` query parameter.
+
+**Endpoint**
+
+```http
+GET <app domain>/shopping/products/hotel/<id>
+```
+
+Where `<id>` is the property `id` returned by `/api/places`.
+
+**Query parameters**
+
+| Parameter | Description | Required | Sample |
+| --- | --- | --- | --- |
+| `currency_code` | ISO 4217 3-letter currency code. Must be activated for your tenant in the easyGDS dashboard. | Yes | `USD` |
+| `language_code` | Locale code for the booking flow. | Yes | `en-US` |
+| `package_id` | Hotel package identifier — provided by the easyGDS team. The same `package_id` is used as for destination-level search. | Yes | `4a5c9770-f901-4b96-8673-ecdc5ee49102` |
+| `travelers` | Room object array (see [§2.2](#22-room-object-array)). | Yes | See §2.2 |
+| `nationality` | ISO 3166-1 alpha-2 lead-guest nationality. | Conditional — required only when nationality is mandatory in your easyGDS dashboard. | `in` |
+| `expectation` | Object with the search criteria. See below. | Yes | See below |
+
+**Expectation object — hotel-level**
+
+| Key | Description | Required | Sample |
+| --- | --- | --- | --- |
+| `nationality` | ISO 3166-1 alpha-2 nationality of the lead guest. | Conditional — required only when nationality is mandatory in your easyGDS dashboard onboarding settings. | `in` |
+| `ht_des_code` | The selected property's `id`. See [destination type & code derivation](#ht-des-type-derivation). | Yes | `24153752` |
+| `ht_des_type` | Always `property_id` for hotel-level search (the selected item's `type` is `hotel`). See [destination type & code derivation](#ht-des-type-derivation). | Yes | `property_id` |
+| `ht_checkin_date` | Check-in date. | Yes | `2026-07-24` |
+| `ht_checkout_date` | Check-out date. | Yes | `2026-07-25` |
+
+**Sample deep link**
+
+```text
+https://demo.apps.easygds.com/shopping/products/hotel/24153752
+  ?currency_code=USD
+  &language_code=en-US
+  &package_id=4a5c9770-f901-4b96-8673-ecdc5ee49102
+  &travelers=[{"type":"adult","age":12,"room":1}]
+  &expectation={"ht_des_code":"24153752","ht_checkin_date":"2026-06-15","ht_checkout_date":"2026-06-16","ht_des_type":"property_id"}
+```
+
+---
+
+## 3. Bundle (Flight \+ Hotel) Search Widget
+
+The Bundle widget combines an outbound flight, a hotel stay, and an inbound flight into a single shopping flow. Because the trip wraps around the hotel stay, **a Bundle search is always a round trip** (`fl_round_trip` is always `true`).
+
+### Required Fields
+
+A bundle search widget must collect:
+
+- **Origin** — airport or city code.
+- **Destination** — airport or city code (also used as the hotel destination).
+- **Departure date** (`YYYY-MM-DD`).
+- **Return date** (`YYYY-MM-DD`).
+- **Travelers** (same shape as Flight / Hotel):
+  - Adults count (per the configured age policy).
+  - Children count, with each child's age (per the age policy).
+  - Infant count, with each infant's age (per the age policy).
+  - Multi-room is supported via the `room` index — see [§3.2](#32-room-object-array).
+- **Cabin class** — one of `Economy`, `Premium`, `Business`, `First`.
+
+### 3.1 Origin & Destination Autocomplete
+
+The Bundle widget uses the same autocomplete endpoint as the Flight widget. See [§1.1 Origin & Destination Autocomplete](#11-origin--destination-autocomplete) for endpoint, query parameters, and response shape.
+
+> **Note:** Although a Bundle includes a hotel stay, the destination is selected from the `/api/places/cities-with-airports` endpoint (not `/api/places`). The selected place's airport/city code is used for both the flight destination **and** the hotel destination — see the `ht_des_code` field in [§3.3](#33-building-the-bundle-deep-link).
+
+### 3.2 Room Object Array
+
+The Bundle widget reuses the Hotel room object array contract. Each object contains `type`, `age`, and `room` (1-based room index). See [§2.2 Room Object Array](#22-room-object-array) for full rules and examples — the same single-room and multi-room examples apply.
+
+### 3.3 Building the Bundle Deep Link
+
+**Endpoint**
+
+```http
+GET <app domain>/shopping/processes/bundle
+```
+
+**Query parameters**
+
+| Parameter | Description | Required | Sample |
+| --- | --- | --- | --- |
+| `currency_code` | Currency code for the search. Must be activated for your tenant in the easyGDS dashboard. | Yes | `SGD` |
+| `language_code` | Locale code for the booking flow. | Yes | `en-US` |
+| `package_id` | Bundle package identifier — provided by the easyGDS team. | Yes | `aaa34775-f480-477c-a656-f7a9a07ce605` |
+| `travelers` | Travelers array, as defined in [§1.2](#12-travelers-array) / [§2.2](#22-room-object-array). | Yes | See §2.2 |
+| `expectation` | Object with the search criteria. See below. | Yes | See below |
+
+#### Expectation object — Bundle
+
+| Key | Description | Required | Sample |
+| --- | --- | --- | --- |
+| `nationality` | ISO 3166-1 alpha-2 nationality of the lead guest. | Conditional — required only when nationality is mandatory in your easyGDS dashboard onboarding settings. | `in` |
+| `fl_cabin_class` | Cabin class for the flight legs. | Yes | One of: `Economy`, `Premium`, `Business`, `First` |
+| `fl_departure_date` | Outbound departure date. | Yes | `2026-10-10` |
+| `fl_return_date` | Inbound (return) date. | Yes | `2026-10-12` |
+| `fl_round_trip` | **Always `true` for Bundle** — a Bundle includes outbound flight \+ hotel stay \+ inbound flight. | Yes | `true` |
+| `start_place_code` | Origin airport or city code from the autocomplete response. | Yes | `KUL` |
+| `start_place_type` | Type of `start_place_code`. Derived from the autocomplete response `type`. For airport use `airport_code` and for other use `city_code`. | Yes | `airport_code` |
+| `des_code` | Flight destination airport or city code. | Yes | `SIN` |
+| `des_type` | Type of `des_code`, Derived from the autocomplete response `type`. For airport use `airport_code` and for other use `city_code` similar to `start_place_type`. | Yes | `airport_code` |
+| `ht_des_code` | Hotel destination identifier. The value is the place's `code` when an airport is selected (matching `des_code`, e.g. `SIN`), or the place's `id` when a country/region/city is selected. See [destination type & code derivation](#ht-des-type-derivation). | Yes | `SIN` |
+| `ht_des_type` | The kind of identifier carried in `ht_des_code`. One of `airport_code`, `place_id`, or `property_id` (see [destination type & code derivation](#ht-des-type-derivation)). For Bundle this is typically `airport_code` because the destination is selected from `/api/places/cities-with-airports`. | Yes | `airport_code` |
+| `ht_checkin_date` | Hotel check-in date. | Yes | `2026-07-24` |
+| `ht_checkout_date` | Hotel check-out date. | Yes | `2026-07-25` |
+
+**Example expectation** — round-trip Economy KUL → SIN, 10–11 July 2026:
+
+```json
+{
+  "fl_cabin_class": "Economy",
+  "fl_departure_date": "2026-07-10",
+  "fl_return_date": "2026-07-11",
+  "fl_round_trip": true,
+  "start_place_code": "KUL",
+  "start_place_type": "airport_code",
+  "des_code": "SIN",
+  "des_type": "airport_code",
+  "ht_des_code": "SIN",
+  "ht_des_type": "airport_code",
+  "ht_checkin_date": "2026-07-10",
+  "ht_checkout_date": "2026-07-11"
+}
+```
+
+**Sample deep link**
+
+```text
+https://demo.apps.easygds.com/shopping/processes/bundle
+  ?currency_code=SGD
+  &language_code=en-US
+  &package_id=aaa34775-f480-477c-a656-f7a9a07ce605
+  &travelers=[{"type":"adult","age":12,"room":1},{"type":"adult","age":12,"room":1}]
+  &expectation={"fl_cabin_class":"Economy","fl_departure_date":"2026-07-10","fl_return_date":"2026-07-11","fl_round_trip":true,"start_place_code":"KUL","start_place_type":"airport_code","des_code":"SIN","des_type":"airport_code","ht_des_code":"SIN","ht_des_type":"airport_code","ht_checkin_date":"2026-07-10","ht_checkout_date":"2026-07-11"}
+```
